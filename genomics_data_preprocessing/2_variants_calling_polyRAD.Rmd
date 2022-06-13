@@ -1,0 +1,546 @@
+---
+title: "Bayesian genotype calling with polyRAD"
+author: "Olivia Angelin-Bonnet"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+		      fig.align = 'center',
+                      out.width = '\\linewidth',
+                      fig.width = 12,
+                      fig.height = 8)
+
+here::i_am("genomics_data_preprocessing/2_variants_calling_polyRAD.Rmd")
+
+if (!require("ggrepel")) install.packages("ggrepel"); library(ggrepel)
+if (!require("kableExtra")) install.packages("kableExtra"); library(kableExtra)
+if (!require("qqman")) install.packages("qqman"); library(qqman)
+if (!require("Rsamtools")) install.packages("Rsamtools"); library(Rsamtools)
+if (!require("polyRAD")) install.packages("polyRAD"); library(polyRAD)
+if (!require("BiocManager")) install.packages("BiocManager")
+if (!require("VariantAnnotation")) BiocManager::install("VariantAnnotation"); library(VariantAnnotation)
+if (!require("vcfR")) install.packages("vcfR"); library(vcfR)
+if (!require("RColorBrewer")) install.packages("RColorBrewer"); library(RColorBrewer)
+if (!require("ggtext")) install.packages("ggtext"); library(ggtext)
+if (!require("matrixStats")) install.packages("matrixStats"); library(matrixStats)
+#if (!require("ggridges")) install.packages("ggridges"); library(ggridges)
+if (!require("here")) install.packages("here"); library(here)
+if (!require("tidyverse")) install.packages("tidyverse"); library(tidyverse)
+```
+
+```{r, cache = FALSE}
+theme_set(theme_bw())
+theme_update(plot.title = element_text(hjust = 0.5))
+theme_update(legend.position = "bottom")
+```
+
+
+## Data path
+
+```{r}
+vcf_file = here("genomics_data_preprocessing/processed_data/crop20_crop52_lines_filtered.vcf")
+samples_info_file = here("data/samples_info.csv")
+```
+
+```{r}
+samples_info = read_csv(samples_info_file, col_types = cols())
+```
+
+
+## Reading the markers info from the VCF file
+
+We'll use the `vcfR` package to read the markers information (total number of reads, number of reads for the reference and alternate allele, estimated dosage with FreeBayes).
+
+```{r, eval = FALSE}
+vcf_raw = read.vcfR(vcf_file, verbose = FALSE)
+
+read_counts_df = extract.gt(vcf_raw, element = "AD") %>% 
+  as_tibble(rownames = "Marker") %>% 
+  pivot_longer(cols = -Marker,
+               names_to = "Sample",
+               values_to = "AD") %>% 
+  separate(AD, into = c("reference_reads", "alternate_reads"), sep = ",", convert = TRUE) %>% 
+  mutate(total_reads = reference_reads + alternate_reads,
+         ratio = alternate_reads / total_reads) 
+
+geno_df = extract.gt(vcf_raw) %>% 
+  as_tibble(rownames = "Marker") %>% 
+  pivot_longer(cols = -Marker,
+               names_to = "Sample",
+               values_to = "Genotype") %>%
+  mutate(Dosage = str_count(Genotype, "1")) %>% 
+  select(-Genotype)
+
+geno_df = left_join(read_counts_df, geno_df, by = c("Marker", "Sample"))
+
+write_csv(geno_df, here("genomics_data_preprocessing/processed_data/genotype.csv"))
+```
+
+```{r, echo = FALSE}
+geno_df = read_csv(here("genomics_data_preprocessing/processed_data/genotype.csv"), col_types = cols())
+```
+
+
+## Reading the genomics data
+
+```{r, eval = FALSE}
+## Compress the VCF file
+bgzip(vcf_file)
+
+## Index the VCF file
+indexTabix(vcf_file_bgz, format = "vcf")
+```
+
+
+```{r}
+vcf_file_bgz = paste0(vcf_file, ".bgz")
+```
+
+
+The following command reads the VCF file and creates a RADdata object. It filters the SNPs based on several criteria, for which the thresholds have been set so that no filtering is performed (since it was done in a previous step). 
+
+```{r, eval = FALSE}
+## Load the VCF into R
+geno_data = VCF2RADdata(vcf_file_bgz,
+                        phaseSNPs = FALSE, ## we want to keep each SNP as a separate marker
+                        possiblePloidies = list(4),
+                        min.ind.with.reads = 1, ## set to 1 because we've done the variant filtering based on missing data before
+                        min.ind.with.minor.allele = 1,
+                        expectedAlleles = 454247 * 2, ## we know that from our step of pre-filtering
+                        expectedLoci = 454247) ## we know that from our step of pre-filtering
+## save(geno_data, file = here("genomics_data_preprocessing/processed_data/polyRAD_geno_data.RData"))
+```
+
+```{r, eval = FALSE}
+geno_data
+```
+<!-- that should be the output from the code chunk above -->
+```
+## RADdata object ##
+176 taxa and 454246 loci
+3368695446 total reads
+Assumed sample cross-contamination rate of 0.001
+
+Possible ploidies:
+Autotetraploid (4)
+```
+
+
+I restrict the samples information to those samples that are in the genomics dataset.
+
+```{r}
+samples_info = samples_info %>% 
+  #filter(VCF_sample_RGID %in% rownames(geno_data$alleleDepth)) %>% 
+  filter(VCF_sample_RGID %in% unique(geno_df$Sample))
+```
+
+
+## Compute the Hind/He statistics
+
+The Hind/He metric has been proposed by Clark (author of the polyRAD package). For a given marker/individual pair, Hind corresponds to the probability that two sequencing reads sampled without replacement are different alleles. He is the expected heterozygosity, which is estimated from allele frequencies (estimated?). It also corresponds to the probability that two alleles randomly sampled from the population are different alleles. It is essentially used with highly duplicated genomes, to detect collapsed paralogs that should be removed from the dataset (markers with high average Hind/He). It is also used to detect samples with higher ploidy than expected, interspecific hybrids or mix of samples (samples with high average Hind/He).
+
+In our case we can't expect the markers to follow any definite pattern due to the design of the population, but we still need to compute it to estimate the inbreeding coefficient.
+
+```{r, eval = FALSE}
+hh_df = HindHe(geno_data)
+```
+
+```{r, eval = FALSE}
+towrite = as_tibble(hh_df, rownames = "Sample")
+write_csv(towrite, here("genomics_data_preprocessing/processed_data/polyRAD_hh_df.csv"))
+```
+
+
+```{r, eval = FALSE}
+markers_name = str_remove(colnames(hh_df), "_.+")
+markers_name = str_replace(markers_name, ":", "_")
+names(markers_name) = colnames(hh_df)
+save(markers_name, file = here("genomics_data_preprocessing/processed_data/markers_name.RData"))
+```
+
+
+```{r, eval = FALSE}
+markers_hh_df = tibble(
+  Marker = markers_name,
+  marker_hh = colMeans(hh_df, na.rm = TRUE)
+)
+write_csv(markers_hh_df, here("genomics_data_preprocessing/processed_data/polyRAD_markers_hh.csv"))
+```
+
+```{r, echo = FALSE}
+markers_hh_df = read_csv(here("genomics_data_preprocessing/processed_data/polyRAD_markers_hh.csv"), 
+                         col_types = cols())
+load(here("genomics_data_preprocessing/processed_data/markers_name.RData"))
+```
+
+```{r estinbreeding}
+est_inbreeding = InbreedingFromHindHe(mean(markers_hh_df$marker_hh), 4)
+est_inbreeding
+```
+
+The inbreeding coefficient is estimated at `r round(est_inbreeding, 3)`. The fact that it is negative makes sense because we are looking at progeny from crosses for potentially very different parents.
+
+
+## Assessing overdispersion
+
+```{r, eval = FALSE}
+overdispersion_res = TestOverdispersion(geno_data)
+save(overdispersion_res, file = here("genomics_data_preprocessing/processed_data/polyRAD_overdispersion.RData"))
+```
+
+```{r, eval = FALSE, echo = FALSE}
+load(here("genomics_data_preprocessing/processed_data/polyRAD_overdispersion.RData"))
+```
+
+
+```{r, eval = FALSE}
+for(i in names(overdispersion_res)) qq(overdispersion_res[[i]], main = i)
+```
+
+```{r, eval = FALSE, echo = FALSE}
+dir.create(here("genomics_data_preprocessing/qqplots"))
+
+for(i in names(overdispersion_res)){
+  jpeg(here(paste0("genomics_data_preprocessing/qqplots/overdispersion_", str_pad(i, width = 2, pad = "0"), ".jpg")),
+       width = 750, 
+       height = 750)
+  qq(overdispersion_res[[i]], main = i)
+  dev.off()
+} 
+```
+
+
+```{r, echo = FALSE}
+overdispersionqq_list = sort(list.files(here("genomics_data_preprocessing/qqplots"), pattern = "overdispersion_"))
+
+knitr::include_graphics(paste0("qqplots/", overdispersionqq_list))
+```
+
+From the QQ plots 8 seems a reasonable value to pick for the overdispersion (at 10 we start overshooting the line).
+
+## Performing the genotype calling
+
+```{r, eval = FALSE}
+geno_calling = IteratePopStructLD(geno_data, overdispersion = 8)
+save(geno_calling, file = here("genomics_data_preprocessing/processed_data/geno_calling_allchr_LD.RData"))
+```
+
+```{r, eval = FALSE}
+genomat = GetWeightedMeanGenotypes(geno_calling, 
+                           maxval = 4,
+                           omitCommonAllele = FALSE) ## make sure that we get the dosage of the alternate allele
+
+genomat = as_tibble(genomat, rownames = "Sample")
+
+colnames(genomat) = str_remove(colnames(genomat), "_.+")
+colnames(genomat) = str_replace(colnames(genomat), ":", "_")
+
+save(genomat, file = here("genomics_data_preprocessing/processed_data/genomat_allchr_LD.RData"))
+
+discrgenomat = GetProbableGenotypes(geno_calling, 
+                              maxval = 4,
+                              omitCommonAllele = FALSE) ## make sure that we get the dosage of the alternate allele
+
+discrgenomat = as_tibble(discrgenomat$genotypes, rownames = "Sample")
+
+colnames(discrgenomat) = str_remove(colnames(discrgenomat), "_.+")
+colnames(discrgenomat) = str_replace(colnames(discrgenomat), ":", "_")
+
+save(discrgenomat, file = here("genomics_data_preprocessing/processed_data/discrgenomat_allchr_LD.RData"))
+```
+
+
+```{r, eval = FALSE}
+toplot = genomat %>% 
+  pivot_longer(cols = -Sample, 
+               names_to = "Marker",
+               values_to = "PosteriorMean") %>% 
+  left_join(geno_df, by = c("Sample", "Marker")) %>% 
+  replace_na(list(Dosage = -1, reference_reads = -1, alternate_reads = -1, total_reads = 0, ratio = -1))
+save(toplot, file = here("genomics_data_preprocessing/processed_data/toplot_genomat_genodf.RData"))
+```
+
+```{r, eval = FALSE}
+toplotdiscr = discrgenomat %>% 
+  pivot_longer(cols = -Sample, 
+               names_to = "Marker",
+               values_to = "MostProbableGenotype") %>% 
+  left_join(geno_df, by = c("Sample", "Marker")) %>% 
+  replace_na(list(Dosage = -1, reference_reads = -1, alternate_reads = -1, total_reads = 0, ratio = -1))
+save(toplot, file = here("genomics_data_preprocessing/processed_data/toplotdiscr_discrgenomat_genodf.RData"))
+```
+
+```{r, echo = FALSE}
+load(here("genomics_data_preprocessing/processed_data/toplot_genomat_genodf.RData"))
+load(here("genomics_data_preprocessing/processed_data/toplotdiscr_discrgenomat_genodf.RData"))
+```
+
+## LD pruning
+
+Given the large size of the dataset, we will prune the markers in LD. To our knowledge, there is no tool to perform LD pruning for polyploid data, so the following script is an adaptation of the LD pruning function from the `SNPRelate` R package (for diploid) coupled with the method with which `GWASpoly` computes the LD between markers (squared of correlation coefficient). We will use the posterior genotype means to compute LD between markers.
+
+The following script prunes markers within a 100,000 bp (0.1Mb) window that have a R squared coefficient above 0.5. It returns a list that gives, for each chromosome, the names of the markers that are retained.
+
+```{r, eval = FALSE}
+snp_chr = str_extract(colnames(genomat)[-1], "ST4.03ch\\d{2}")
+snp_pos = as.numeric(str_extract(colnames(genomat)[-1], "(?<=_)\\d+"))
+
+n_chr = table(snp_chr) ## number of markers per chromosome
+
+snp_id_list <- lapply(names(n_chr), function(i){
+  which(snp_chr == i)
+})
+names(snp_id_list) <- names(n_chr)
+
+## Parameters for the LD pruning
+sw = 100000 ## size of the sliding window (in bp)
+ld_thr = 0.5
+
+set.seed(32)
+snps_retained = lapply(names(n_chr), function(chr){
+  
+  cat(chr, "\n")
+  
+  n = n_chr[chr]
+  pos = snp_pos[snp_id_list[[chr]]]
+  
+  ## Compute the LD between markers (the + 1 is because the first column is sample names)
+  cat("Computing LD...\n")
+  LD_mat = cor(genomat[, (snp_id_list[[chr]] + 1)], use = "complete.obs")^2
+  diag(LD_mat) = 0 ## ignoring the LD between a marker and itself
+  
+  ## Set of markers to retain, starts empty
+  S = vector("logical", n)
+  
+  ## Randomly select a starting point in the genome
+  i = sample(1:n, 1)
+  S[i] = TRUE
+  
+  ## Forward phase: move forward along the chromosome
+  cat("Forward phase...\n")
+  if(i < n){
+    for(j in (i+1):n){
+      j_pos <- pos[j] ## position of next marker
+      sliding_window <- c(j_pos - sw, j_pos + sw) ## min and max positions that are in the sliding window with j
+      
+      ## select markers from set S that are in the sliding window with j
+      snps_to_compare <- which(S & (pos >= sliding_window[1]) & (pos <= sliding_window[2])) 
+      
+      ## LD between marker j and all markers already selected that are within the sliding window
+      ld_j <- LD_mat[j, snps_to_compare]
+      
+      ## If not in LD with a marker already selected, add marker j to the list of selected markers
+      if(all(ld_j <= ld_thr)) S[j] <- TRUE
+    }
+  }
+  
+  cat("Backward phase...\n")
+  ## Backward phase: move backward along the chromosome
+  if(i > 1){
+    for(j in (i - 1):1){
+      j_pos <- pos[j] ## position of next marker
+      sliding_window <- c(j_pos - sw, j_pos + sw) ## min and max positions that are in the sliding window with j
+      
+      ## select markers from set S that are in the sliding window with j
+      snps_to_compare <- which(S & (pos >= sliding_window[1]) & (pos <= sliding_window[2])) 
+      
+      ## LD between marker j and all markers already selected that are within the sliding window
+      ld_j <- LD_mat[j, snps_to_compare]
+      
+      ## If not in LD with a marker already selected, add marker j to the list of selected markers
+      if(all(ld_j <= ld_thr)) S[j] <- TRUE
+    }
+  }
+  
+  rm(LD_mat)
+  gc()
+  
+  return(snp_id_list[[chr]][which(S)])
+})
+names(snps_retained) = names(n_chr)
+
+# sum(sapply(snp_id_list, length))
+# sum(sapply(snps_retained, length))
+# 
+# sapply(snp_id_list, length)
+# sapply(snps_retained, length)
+
+save(unlist(snps_retained), file = here("genomics_data_preprocessing/processed_data/ld_pruning_snps_retained.RData"))
+```
+
+```{r, echo = FALSE}
+load(here("genomics_data_preprocessing/processed_data/ld_pruning_snps_retained.RData"))
+```
+
+
+We can see how many variants were retained after LD pruning:
+
+```{r, fig.height = 10}
+variants_pos_df <- tibble(Marker = unique(geno_df$Marker)) %>% 
+  mutate(Chromosome = str_extract(Marker, "ST4.03ch\\d{2}"),
+         Position = as.numeric(str_extract(Marker, "(?<=_)\\d+")),
+         Selected = Marker %in% ld_pruning_snps_retained)
+
+## Window size for the plot: 0.5Mb
+window_size <- 0.5e6
+
+density_df <- lapply(unique(variants_pos_df$Chromosome), function(chr){
+  df <- variants_pos_df %>% 
+    filter(Chromosome == chr)
+  
+  max_pos <- max(df$Position) + 1
+  
+  ## Create the bins for the plots
+  bins <- seq(1, max_pos, by = window_size)
+  if(max(bins) < max_pos) bins <- c(bins, max_pos)
+  
+  ## Compute bins half-points for the plots
+  bins_x <- sapply(2:length(bins), function(i){mean(c(bins[i-1], bins[i]))}) 
+  
+  ## Compute bins size (bins are left-closed) so we're counting min_bin <= x < max_bin
+  bins_size <- sapply(2:length(bins), function(i){bins[i] - bins[i - 1]}) 
+  
+  tibble(Chromosome = chr,
+         x = bins_x,
+         size = bins_size,
+         count = matrixStats::binCounts(df$Position, bx = bins, right = FALSE),
+         count_ld = matrixStats::binCounts(filter(df, Selected)$Position, bx = bins, right = FALSE),
+         y = count / size,
+         y_ld = count_ld / size)
+  
+}) %>% 
+  reduce(bind_rows)
+
+cols <- brewer.pal(3, "Set1")[1:2]
+
+scientific_10 <- function(x) {
+  ifelse(x == 0, 0, parse(text=gsub("e", " %*% 10^", scales::scientific_format()(x))))
+}
+
+density_df  %>% 
+  mutate(x = x *1e-6,
+         y_ld = 10 * y_ld) %>% ## for the secondary y axis
+  pivot_longer(cols = starts_with("y"),
+               names_to = "Filtering",
+               values_to = "Density") %>% 
+  mutate(Filtering = case_when(Filtering == "y" ~ "Before LD pruning",
+                               TRUE ~ "After LD pruning")) %>% 
+  ggplot(aes(x = x, y = Density, colour = Filtering)) +
+  geom_line() +
+  facet_wrap(~Chromosome, scales = "free_x", ncol = 3) +
+  scale_colour_manual(values = cols, guide = "none") +
+  scale_y_continuous(name = "Markers density before LD pruning (bp<sup>-1</sup>)",
+                     label = scientific_10,
+                     sec.axis = sec_axis(trans = ~./10,
+                                         label = scientific_10,
+                                         name = "Markers density after LD pruning (bp<sup>-1</sup>)")) +
+  theme(axis.title.y.left = element_markdown(colour = cols[2]),
+        axis.text.y.left = element_text(colour = cols[2]),
+        axis.title.y.right = element_markdown(colour = cols[1]),
+        axis.text.y.right = element_text(colour = cols[1])) +
+  labs(x = "Genomic position (Mb)")
+```
+
+
+```{r}
+toplot = toplot %>% 
+  filter(Marker %in% ld_pruning_snps_retained)
+
+toplotdiscr = toplotdiscr %>% 
+  filter(Marker %in% ld_pruning_snps_retained)
+```
+
+## Exporting the data
+
+`polyRAD` offers to export a `RADdata` object into a format suitable for other R packages or software, however it's quite hard to control the output for `GWASpoly` and `adegenet`. We will assign a NA for any marker/sample pair with less than 3 reads.
+
+```{r}
+toplot = toplot %>% 
+  filter(Marker %in% ld_pruning_snps_retained)
+
+toplotdiscr = toplotdiscr %>% 
+  filter(Marker %in% ld_pruning_snps_retained)
+```
+
+```{r}
+gwaspoly_data = toplot %>% 
+  mutate(PosteriorMean = case_when(total_reads < 3 ~ NA_real_, ## replace genotype by NA if there are less than 3 reads
+                                   TRUE ~ PosteriorMean)) %>% 
+  select(Sample, Marker, PosteriorMean) %>% 
+  pivot_wider(names_from = Sample,
+              values_from = PosteriorMean) %>% 
+  mutate(Chrom = str_remove(Marker, "_.+"),
+         Position = str_extract(Marker, "(?<=_)\\d+")) %>% 
+  select(Marker, Chrom, Position, everything())
+
+write_csv(gwaspoly_data, here::here("genomics_data_preprocessing/processed_data/gwaspoly_input.csv"))
+```
+
+We want a very similar output for `adegenet`, except that we need the discrete (most probable) genotypes.
+
+```{r}
+adegenet_data = toplotdiscr %>% 
+  mutate(MostProbableGenotype = case_when(total_reads < 3 ~ NA_integer_, ## replace genotype by NA if there are less than 3 reads
+                                          TRUE ~ MostProbableGenotype)) %>% 
+  select(Sample, Marker, MostProbableGenotype) %>% 
+  pivot_wider(names_from = Sample,
+              values_from = MostProbableGenotype) %>% 
+  mutate(Chrom = str_remove(Marker, "_.+"),
+         Position = str_extract(Marker, "(?<=_)\\d+")) %>% 
+  select(Marker, Chrom, Position, everything())
+
+write_csv(adegenet_data, here::here("genomics_data_preprocessing/processed_data/adegenet_input.csv"))
+```
+
+
+For STRUCTURE, we need a file with no column names, and one row per individual as follows:
+
+- Sample Name;
+
+- Population ID: integer from 1 to N where N is the number of populations in the dataset; since we're not using the info can be set to 1 for everyone;
+
+- popflag: 0 if we don't want to use the population info (which is the case here), 1 if we want to use it;
+
+- For each marker, 4 columns giving 0/1 for presence/absence of the alternate allele for the given marker (e.g. `1 1 0 0` for a marker with dosage 2).
+
+Also, we need to randomly sample 10,000 variants for the STRUCTURE analysis (we have too many in our dataset for STRUCTURE to run).
+
+```{r}
+set.seed(1)
+sampled_markers = sample(unique(toplot$Marker), 10000, replace = FALSE)
+```
+
+
+```{r}
+dosage_to_geno = c(
+  "-1" = paste0(rep("-9", 4), collapse = " "),
+  "0" = paste0(rep("0", 4), collapse = " "),
+  "1" = paste0(c("1", rep("0", 3)), collapse = " "),
+  "2" = paste0(c(rep("1", 2), rep("0", 2)), collapse = " "),
+  "3" = paste0(c(rep("1", 3), 0), collapse = " "),
+  "4" = paste0(rep("1", 4), collapse = " ")
+)
+
+dosage_to_geno
+```
+
+```{r}
+structure_df = toplotdiscr %>% 
+  filter(Marker %in% sampled_markers) %>% 
+  mutate(MostProbableGenotype = case_when(total_reads < 3 ~ -1, ## replace genotype by NA if there are less than 3 reads
+                                          TRUE ~ as.double(MostProbableGenotype))) %>% 
+  select(Sample, Marker, MostProbableGenotype) %>% 
+  mutate(Geno = as.character(MostProbableGenotype),
+         Geno = dosage_to_geno[Geno]) %>% 
+  group_by(Sample) %>% 
+  summarise(Geno = paste0(Geno, collapse = " ")) %>% 
+  mutate(structure_line = paste0(Sample, " 1 0 ", Geno))
+```
+
+```{r}
+structure_file = file(here("genomics_data_preprocessing/processed_data/structure_input.str"))
+writeLines(structure_df$structure_line, structure_file)
+close(structure_file)
+```
