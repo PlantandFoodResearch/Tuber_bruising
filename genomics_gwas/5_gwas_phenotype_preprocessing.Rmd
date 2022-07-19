@@ -1,0 +1,84 @@
+---
+title: "Processing of tuber bruising phenotype"
+author: "Olivia Angelin-Bonnet"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+		      fig.align = 'center',
+                      out.width = '\\linewidth',
+                      fig.width = 12,
+                      fig.height = 8)
+
+here::i_am("genomics_gwas/5_gwas_phenotype_preprocessing.Rmd")
+
+if (!require("readxl")) install.packages("readxl"); library(readxl)
+if (!require("here")) install.packages("here"); library(here)
+if(!require("bestNormalize")) install.packages("bestNormalize"); library(bestNormalize)
+if (!require("tidyverse")) install.packages("tidyverse"); library(tidyverse)
+```
+
+```{r, cache = FALSE}
+theme_set(theme_bw())
+theme_update(plot.title = element_text(hjust = 0.5),
+             legend.position = "bottom",
+             text = element_text(size = 16))
+```
+
+## Data path
+
+```{r}
+samples_info_file = here("data/samples_info.csv")
+bruising_file = here("data/raw_bruising_scores.csv")
+```
+
+```{r}
+samples_info = read_csv(samples_info_file, col_types = cols())
+```
+
+## Reading the bruising phenotype
+
+We'll read the bruising score dataset and get an average bruising score for each genotype (= average over 6 tubers, 3 from each biological replicate).
+
+```{r}
+bruising_df = read_csv(bruising_file, show_col_types = FALSE) %>% 
+  select(Sample, Rep, starts_with("Bruise")) %>% 
+  pivot_longer(cols = starts_with("Bruise"),
+               names_to = "Bruise",
+               values_to = "bruising_score") %>% 
+  group_by(Sample) %>% 
+  summarise(bruising_score_mean = mean(bruising_score, na.rm = TRUE))
+```
+
+
+We can assess whether each phenotype is normally distributed using the Shapiro-Wilk test.
+
+```{r}
+shapiro.test(bruising_df$bruising_score_mean)
+```
+
+The test shows evidence of non-normality.
+
+## Normalisation of phenotypes using `bestNormalize`
+
+The package `bestNormalize` tests different normalisation methods on a given dataset and automatically selects the best performing one. It can be used as follows:
+
+```{r}
+set.seed(1)
+norm_vals <- bestNormalize(bruising_df$bruising_score_mean)
+norm_vals
+```
+
+
+```{r}
+tibble(Sample = bruising_df$Sample,
+       bruising_score_mean = norm_vals$x.t) %>% 
+  write_csv(here("genomics_gwas/processed_data/pheno_df_trans.csv"))
+```
+
+
+```{r}
+shapiro.test(norm_vals$x.t)
+```

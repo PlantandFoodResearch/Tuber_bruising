@@ -1,0 +1,263 @@
+---
+title: "Transcriptomics data pre-processing"
+author: "Olivia Angelin-Bonnet"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+		      fig.align = 'center',
+                      out.width = '\\linewidth',
+                      fig.width = 12,
+                      fig.height = 8)
+
+here::i_am("transcriptomics_differential_expression/7_transcriptomics_preprocessing.Rmd")
+
+if (!require("here")) install.packages("here"); library(here)
+if(!require("RColorBrewer")) install.packages("RColorBrewer"); library(RColorBrewer)
+if (!requireNamespace("DESeq2", quietly = TRUE)) BiocManager::install("DESeq2"); library(DESeq2)
+if (!require("biomaRt")) BiocManager::install("biomaRt"); library(biomaRt)
+if (!require("GenomicFeatures")) BiocManager::install("GenomicFeatures"); library(GenomicFeatures)
+if (!require("tidyverse")) install.packages("tidyverse"); library(tidyverse)
+```
+
+```{r, cache = FALSE}
+theme_set(theme_bw())
+theme_update(plot.title = element_text(hjust = 0.5),
+             legend.position = "bottom",
+             text = element_text(size = 16))
+```
+
+## Data path
+
+```{r}
+counts_path <- here("data/RNAseq/")
+summary_path <- here("data/RNAseq/Alignment_stats_PGSCv4.03.csv")
+
+counts_files_list <- list.files(path = counts_path, pattern = "*out.tab$")
+cat(length(counts_files_list), "counts files.")
+
+gtf_path <- here("data/PGSC_DM_V403_fixed_representative_genes.gtf")
+```
+
+## Reading gene read counts
+
+```{r}
+counts_df = lapply(counts_files_list, function(f){
+  sample_name = str_remove(f, "_S\\d+_STARReadsPerGene.out.tab")
+  counts_raw = read.table(paste0(counts_path, f), sep = "\t", header = FALSE)
+  
+  ## Getting the gene read counts (column 4 is for second_read_strand)
+  counts = counts_raw[5:nrow(counts_raw), c(1, 4)]
+  colnames(counts) = c("gene_id", sample_name)
+  
+  return(counts)
+}) %>% 
+  reduce(full_join, by = "gene_id")
+
+dim(counts_df)
+
+write_csv(counts_df, here("transcriptomics_differential_expression/processed_data/rna_seq_read_counts_raw.csv"))
+```
+
+
+## Genes filtering
+
+We will remove from the dataset any gene for which more more than 5% of the samples have a raw read count < 5.
+
+```{r}
+genes_low_expr = rowSums(counts_df[, -1] < 5) / (ncol(counts_df) - 1)
+names(genes_low_expr) = counts_df$gene_id
+
+sum(genes_low_expr > 0.95)
+```
+
+```{r, echo = FALSE}
+temp = round(100 * sum(genes_low_expr > 0.95) / nrow(counts_df), 2)
+```
+
+
+This filtering leads to removing `r sum(genes_low_expr > 0.95)` genes, i.e. `r temp`% of all genes.
+
+```{r}
+retained_genes = names(genes_low_expr)[genes_low_expr <= 0.95]
+
+counts_df_filtered = counts_df %>% 
+  filter(gene_id %in% retained_genes)
+
+write_csv(counts_df_filtered,
+          here("transcriptomics_differential_expression/processed_data/rna_seq_read_counts_raw_filtered.csv"))
+```
+
+
+## Conversion of genes ID to GO terms
+
+In this section, we query the Ensembl database, through the BiomaRt package, to assign GO terms to the genes in the dataset.
+
+```{r}
+genes_list = counts_df_filtered$gene_id
+```
+
+```{r}
+## Select a database
+ensembl_plant = useMart("plants_mart", host="plants.ensembl.org")
+
+## Select a dataset
+sol_ensembl = useMart("plants_mart", host="plants.ensembl.org", dataset = "stuberosum_eg_gene")
+```
+
+We can then query the dataset using a list of filters. In the transcriptomic dataset, the genes are identified with an ID starting with `PGSC` and with `DMG` in it (which is different from the proteins which have `DMT` in their PGSC ID):
+
+```{r}
+filters = listFilters(sol_ensembl)
+filters[str_which(filters$description, "PGSC\\d+DMG"), ]
+```
+Note that using `ensembl_gene_id` as filter seems to yield exactly the same results.
+
+We can extract different attributes from the dataset. For example, we can get the GO term accession of the queries, their GO name, or the KEGG ID.The attribute definition_1006 was removed from the query because one of the query’s formatting for this attribute is problematic and blocks the search:
+
+```{r}
+attributes = listAttributes(sol_ensembl)
+attributes[str_which(attributes$description, "(GO)|(KEGG)"), ]
+
+attrs = c("go_id", "name_1006", "namespace_1003")
+```
+
+Notes about the different GO attributes:
+
+the GO term evidence code refers to the evidence (e.g. inferred from experiment, publication, etc) used to associate a gene/transcript to a particular GO term.
+
+A GO term can refer to 3 domains (namespace_1003):
+
+- Molecular function: the molecular activites of the individual gene products;
+- Cellular Component: where the gene products are active;
+- Biological Process: the pathways and larger processes to which that gene product’s activity contributes.
+
+We use the function getBM() to build the query. I perform the query in several batches, otherwise it generally fails.
+
+```{r, eval = FALSE}
+batches = seq(1, length(genes_list), by = 200)
+if(batches[length(batches)] != length(genes_list)) batches = c(batches, length(genes_list))
+
+go_annot = lapply(2:length(batches), function(i){
+  getBM(filters = "pgsc_gene",
+        values = genes_list[batches[i-1]:batches[i]],
+        attributes = c("pgsc_gene",
+                       attrs),
+        mart = sol_ensembl)
+}) %>% 
+  reduce(bind_rows) 
+
+go_annot = go_annot %>% 
+  filter(namespace_1003 %in% c("biological_process", "molecular_function", "cellular_component")) %>% 
+  mutate(GO_domain = case_when(namespace_1003 == "biological_process" ~ 'Biological process',
+                               namespace_1003 == "cellular_component" ~ 'Cellular component',
+                               namespace_1003 == "molecular_function" ~ 'Molecular function')) %>% 
+  rename(gene_id = pgsc_gene)
+
+write_csv(go_annot, here("transcriptomics_differential_expression/processed_data/go_annot.csv"))
+```
+
+```{r, echo = FALSE}
+go_annot = read_csv(here("transcriptomics_differential_expression/processed_data/go_annot.csv"), show_col_types = FALSE)
+
+temp1 = sum(genes_list %in% go_annot$gene_id)
+temp2 = round(100 * temp1 / length(genes_list), 1)
+```
+
+Out of the `r length(genes_list)` genes in the filtered transcriptomics dataset, `r temp1` of them, or `r temp2`%, are associated with at least one GO term.
+
+For future GO enrichment analyses, we will gather the genes assigned to each GO term in the annotation retrieved for the dataset. They will constitute the background set in enrichment analyses.
+
+```{r, eval = FALSE}
+go_terms = unique(go_annot$go_id)
+
+batches = seq(1, length(go_terms), by = 200)
+if(batches[length(batches)] != length(go_terms)) batches = c(batches, length(go_terms))
+
+go_background = lapply(2:length(batches), function(i){
+  getBM(filters = "go",
+        values = go_terms[batches[i-1]:batches[i]],
+        attributes = c("go_id", "namespace_1003", "name_1006", "pgsc_gene"),
+        mart = sol_ensembl)
+}) %>% 
+  reduce(bind_rows) %>% 
+  distinct() %>% 
+  filter(go_id %in% go_terms) %>% 
+  mutate(GO_domain = case_when(namespace_1003 == "biological_process" ~ 'Biological process',
+                               namespace_1003 == "cellular_component" ~ 'Cellular component',
+                               namespace_1003 == "molecular_function" ~ 'Molecular function')) %>% 
+  rename(gene_id = pgsc_gene) %>% 
+  arrange(go_id)
+
+## Checking how many background genes are not in the filtered dataset
+# sum(!(unique(go_background$gene_id) %in% genes_list))
+
+write_csv(go_background, here("transcriptomics_differential_expression/processed_data/go_background.csv"))
+```
+
+## Retrieving the genomic position of the genes
+
+```{r}
+annotation = makeTxDbFromGFF(gtf_path, format = c("gtf"))
+annot_list = as.list(annotation)
+
+genes_info_df = left_join(
+  annot_list$transcripts,
+  annot_list$genes,
+  by = "tx_id"
+) %>% 
+  select(gene_id, tx_chrom, tx_start, tx_end) %>% 
+  distinct() %>% 
+  rename(chrom = tx_chrom) %>% 
+  mutate(pos = ceiling((tx_start + tx_end) / 2),
+         posmb = pos / 1e6)
+  # select(gene_id, chrom, posmb)
+```
+
+## Querying gene description
+
+We will also use the biomaRt package to query the Ensembl database in order to obtain a name and description for the different genes.
+
+```{r, eval = FALSE}
+## Run the query by batch
+batches = seq(1, length(genes_list), by = 200)
+if(batches[length(batches)] != length(genes_list)) batches = c(batches, length(genes_list))
+
+descr_annot = lapply(2:length(batches), function(i){
+  getBM(filters = "pgsc_gene",
+        values = genes_list[batches[i-1]:batches[i]],
+        attributes = c("pgsc_gene", "ensembl_peptide_id", "description"),
+        mart = sol_ensembl)
+}) %>% 
+  purrr::reduce(bind_rows) %>% 
+  mutate(description = str_remove(description, "\\[Source:.+$")) %>% 
+  rename(gene = pgsc_gene,
+         transcript = ensembl_peptide_id) %>% 
+  group_by(gene, description) %>% 
+  summarise(transcript = paste0(transcript, collapse = ", ")) %>% 
+  filter(description != "")
+
+write_csv(descr_annot, here("transcriptomics_differential_expression/processed_data/descr_annot_nopos.csv"))
+```
+
+```{r, echo = FALSE}
+descr_annot = read_csv(here("transcriptomics_differential_expression/processed_data/descr_annot_nopos.csv"), show_col_types = FALSE)
+
+temp1 = sum(genes_list %in% descr_annot$gene)
+temp2 = round(100 * temp1 / length(genes_list), 2)
+```
+
+Out of the `r length(genes_list)` genes in the filtered transcriptomics dataset, `r temp1` of them, or `r temp2`% have a description.
+
+```{r}
+all(descr_annot$gene %in% genes_info_df$gene_id)
+
+genes_info_df %>% 
+  full_join(descr_annot, by = c("gene_id" = "gene")) %>% 
+  write_csv(here("transcriptomics_differential_expression/processed_data/descr_annot.csv"))
+```
+
+
+

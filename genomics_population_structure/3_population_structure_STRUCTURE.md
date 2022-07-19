@@ -1,0 +1,479 @@
+Population structure estimation with STRUCTURE
+================
+Olivia Angelin-Bonnet
+June 14, 2022
+
+``` r
+theme_set(theme_bw())
+theme_update(plot.title = element_text(hjust = 0.5))
+theme_update(legend.position = "bottom")
+```
+
+## Data path
+
+``` r
+working_folder = here("genomics_population_structure/")
+structure_input = here("genomics_data_preprocessing/processed_data/structure_input.str")
+samples_info_file = here("data/samples_info.csv")
+```
+
+## Reading samples information
+
+``` r
+samples_info = read_csv(samples_info_file, col_types = cols())
+```
+
+``` r
+samples_family = samples_info$Family
+names(samples_family) = samples_info$VCF_sample_RGID
+samples_family[subset(samples_info, role == "parent")$VCF_sample_RGID] = "parent"
+```
+
+``` r
+families_cross = samples_info %>% 
+  select(Family, Mum, Dad) %>% 
+  distinct() %>% 
+  mutate(across(c(Mum, Dad), ~ str_replace(.x, "1335_8", "Crop52")), 
+         Dad = str_remove(Dad, "dad"),
+         cross = paste0(Mum, " x ", Dad)) %>% 
+  select(Family, cross)
+```
+
+## Running STRUCTURE
+
+The first step of the STRUCTURE analysis is to estimate the appropriate
+number of populations `K` from the data. For that, we need to run
+STRUCTURE with different values of K and see which value yields the best
+results. We also need to run several times STRUCTURE with the same value
+of K to ensure that the different parameters each converge to a similar
+estimate across the runs (if not it could indicate that the run length
+is too small). We’ll use the package `ParallelStructure` to run several
+analyses at the same time. This package makes use of the `mclapply` from
+the `Parallel` package to run one analysis per available core. This
+function is not working well when launched from RStudio directly, so
+we’ll use a separate R script to run `ParallelStructure`, which is
+created in the chunk below.
+
+``` r
+if(!require(optparse)) install.packages("optparse"); library("optparse")
+if (!require("ParallelStructure")) install.packages("ParallelStructure", repos="http://R-Forge.R-project.org"); library(ParallelStructure)
+
+option_list = list(
+  make_option(c("-j", "--joblist"), type="character", default=NULL, help="joblist file", metavar="character"),
+  make_option(c("-c", "--ncpu"), type="integer", default=2, help="Number of CPU cores to be used", metavar="integer"),
+  make_option(c("-s", "--structure"), type="character", default=NULL, help="Location of the executable command line STRUCTURE program", metavar="character"),
+  make_option(c("-i", "--input"), type="character", default=NULL, help="STRUCTURE input file", metavar="character"),
+  make_option(c("-o", "--output"), type="character", default="./", help="location of folder to write the output files", metavar="character"),
+  make_option(c("-n", "--ninds"), type="integer", default=NULL, help="number of samples in input file", metavar="integer"),
+  make_option(c("-l", "--nloci"), type="integer", default=NULL, help="number of loci in input file", metavar="integer"),
+  make_option(c("-p", "--ploidy"), type="integer", default=NULL, help="ploidy", metavar="integer")
+)
+ 
+opt_parser = OptionParser(option_list=option_list)
+opt = parse_args(opt_parser)
+
+if(any(sapply(opt, is.null))){
+    print_help(opt_parser)
+    stop("Please provide the requested arguments.")
+} 
+
+
+parallel_structure(
+    joblist = opt$joblist,
+    n_cpu = opt$ncpu,
+    structure_path = opt$structure, 
+    infile = opt$input, 
+    outpath = opt$output,
+    numinds = opt$ninds, 
+    numloci = opt$nloci, 
+    plot_output = 1, 
+    label = 1, 
+    popdata = 1, 
+    popflag = 1, ## popflag column in the input data
+    locdata = 0, 
+    phenotypes = 0, 
+    markernames = 0, 
+    mapdist = 0, 
+    onerowperind = 1, ## One row per individual 
+    phaseinfo = 0, 
+    recessivealleles = 0,  
+    phased = 0, 
+    extracol = 0, 
+    missing = -9, 
+    ploidy = opt$ploidy, 
+    noadmix = 0, 
+    linkage = 0, 
+    usepopinfo = 0, 
+    locprior = 0,
+    inferalpha = 1, 
+    alpha = 1, 
+    popalphas = 0, 
+    unifprioralpha = 1, 
+    alphamax = 10, 
+    alphapropsd = 0.025, 
+    freqscorr = 1,   
+    onefst = 0, 
+    fpriormean = 0.01, 
+    fpriorsd = 0.05, 
+    inferlambda = 0, 
+    lambda = 1, 
+    computeprob = 1,   
+    pfromflagonly = 0, 
+    ancestdist = 0, 
+    startatpopinfo = 0, 
+    metrofreq = 10, 
+    updatefreq = 1, 
+    printqhat = 1, ## Print estimated Q for each individual in separate output file
+    revert_convert=0,  
+    randomize=1)
+```
+
+We first need to write the list of jobs that ParallelStructure will run.
+
+``` r
+## Values of K to test and number of replicates
+k_to_test = 1:10
+n_runs_per_k = 5
+
+## Each run analyses all the populations (i.e. the entire dataset)
+popjobs = "1"
+
+## Burnin and run length
+burnin = 10000
+runlength = 20000
+
+joblist_df = tibble(pop = popjobs,
+                    k = rep(k_to_test, each = n_runs_per_k),
+                    burnin = burnin,
+                    runlength = runlength,
+                    rep = rep(1:n_runs_per_k, length(k_to_test))) %>% 
+  mutate(jobname = paste0("T", k, rep)) %>% 
+  select(jobname, pop, k, burnin, runlength)
+
+head(joblist_df) 
+```
+
+    ## # A tibble: 6 × 5
+    ##   jobname pop       k burnin runlength
+    ##   <chr>   <chr> <int>  <dbl>     <dbl>
+    ## 1 T11     1         1  10000     20000
+    ## 2 T12     1         1  10000     20000
+    ## 3 T13     1         1  10000     20000
+    ## 4 T14     1         1  10000     20000
+    ## 5 T15     1         1  10000     20000
+    ## 6 T21     1         2  10000     20000
+
+``` r
+dim(joblist_df)
+```
+
+    ## [1] 50  5
+
+``` r
+joblist_file = paste0(working_folder, "processed_data/joblist_structure.txt")
+write_delim(joblist_df, joblist_file, delim = " ", col_names = FALSE)
+```
+
+We subsampled 10,000 variants from the VCF file for the STRUCTURE run,
+and we have 176 samples in our dataset.
+
+The R script is then executed via:
+
+``` r
+cmd <- paste0('Rscript ', here("genomics_population_structure/run_parallel_structure.R"),
+              ' -j ', paste0(working_folder, "processed_data/joblist_structure.txt"),
+              ' -c ', 4, 
+              ' -s ', "~/programs/structure_kernel_src/",
+              ' -i ', structure_input,
+              ' -o ', paste0(working_folder, "processed_data/structure_output/"),
+              ' -n ', 176,
+              ' -l ', 10000,
+              ' -p ', 4)
+
+system(cmd)
+```
+
+## Analysing STRUCTURE results
+
+The results from each individual run are saved, and a summary file is
+also created.
+
+``` r
+structure_summary = read_csv(paste0(working_folder, 
+                                    "processed_data/structure_output/results_summary.csv"), 
+                             col_types = cols(), 
+                             skip = 1) %>% 
+  select(-`1`) %>% ## remove first column of row index
+  filter(str_detect(run_id, "T")) ## remove first row of 0s
+
+dim(structure_summary)
+```
+
+    ## [1] 50  8
+
+The log-probability of the data X given the number of populations K,
+ln(P(X\|K)), also noted L(K) (the likelihood of K), is computed for each
+run of STRUCTURE. Its distribution over the range of K values tested is
+plotted below.
+
+``` r
+structure_summary %>% 
+  ggplot(aes(x = k, y = ln_prob_data)) +
+  geom_point(alpha = 0.5) +
+  scale_x_continuous(breaks = 1:10) +
+  labs(x = "K",
+       y = "L(K)")
+```
+
+<img src="3_population_structure_STRUCTURE_files/figure-gfm/unnamed-chunk-11-1.png" width="\linewidth" style="display: block; margin: auto;" />
+
+The likelihood of K seems to be consistent across replicates (i.e. runs
+with the same value of K) for most values of K. For some values however
+(e.g. 5 and 6), one of the runs differ significantly from the others. A
+possible explanation is that the run length is too short.
+
+The plot below depicts Delta K, which is the ratio of the mean second
+order rate of change of the likelihood over the variance of the
+likelihood across the replicates [^1]:
+
+``` r
+temp = structure_summary %>% 
+  group_by(k) %>% 
+  summarise(mean_ln_prob_data = mean(ln_prob_data),
+            sd_ln_prob_data = sd(ln_prob_data)) 
+
+l_K = temp$mean_ln_prob_data
+s_L_K = temp$sd_ln_prob_data
+
+delta_K = sapply(2:(length(l_K) - 1), function(i) {
+  abs(l_K[i + 1] - (2 * l_K[i]) + l_K[i - 1]) / s_L_K[i]
+})
+
+tibble(K = 2:(length(l_K) - 1),
+       delta_K = delta_K) %>% 
+  ggplot(aes(x = K, y = delta_K)) + 
+  geom_line(colour = "gray") + 
+  geom_point() +
+  labs(x = "K",
+       y = "Delta K")
+```
+
+<img src="3_population_structure_STRUCTURE_files/figure-gfm/unnamed-chunk-12-1.png" width="\linewidth" style="display: block; margin: auto;" />
+
+The highest value of Delta K is obtained for K = 2, which is not really
+interesting for us. The second highest value is obtained for K = 4.
+
+## STRUCTURE results for K = 4
+
+Below, we load the results of the 5 runs of STRUCTURE for K = 4. For
+each sample, we get a posterior membership probability for each
+subpopulation `i` (i = 1, 2, 3, 4) and each run of STRUCTURE `j` (j = 1,
+2, …, 5).
+
+Note that STRUCTURE truncated the sample names in the input file, so we
+correct for that as well.
+
+``` r
+K = 4
+
+cmd = paste("cat", structure_input, "| sed 's/\\|/ /'|gawk '{print $1}'")
+samples_full_name = system(cmd, intern = TRUE)
+names(samples_full_name) = str_trunc(samples_full_name, 11, ellipsis = "")
+
+pop_structure_df = lapply(1:5, function(i){
+  read_table(paste0(working_folder, "processed_data/structure_output/results_job_T", K, i, "_q"),
+             col_types = cols(),
+             col_names = c("Sample", "Family", paste0("K", 1:K, "_", i)))
+}) %>% 
+  reduce(full_join, by = c("Sample", "Family")) %>% 
+  mutate(Sample = samples_full_name[Sample], 
+         Family = samples_family[Sample]) 
+```
+
+    ## Warning: 176 parsing failures.
+    ## row col  expected    actual                                                                                                                   file
+    ##   1  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T41_q'
+    ##   2  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T41_q'
+    ##   3  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T41_q'
+    ##   4  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T41_q'
+    ##   5  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T41_q'
+    ## ... ... ......... ......... ......................................................................................................................
+    ## See problems(...) for more details.
+
+    ## Warning: 176 parsing failures.
+    ## row col  expected    actual                                                                                                                   file
+    ##   1  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T42_q'
+    ##   2  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T42_q'
+    ##   3  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T42_q'
+    ##   4  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T42_q'
+    ##   5  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T42_q'
+    ## ... ... ......... ......... ......................................................................................................................
+    ## See problems(...) for more details.
+
+    ## Warning: 176 parsing failures.
+    ## row col  expected    actual                                                                                                                   file
+    ##   1  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T43_q'
+    ##   2  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T43_q'
+    ##   3  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T43_q'
+    ##   4  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T43_q'
+    ##   5  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T43_q'
+    ## ... ... ......... ......... ......................................................................................................................
+    ## See problems(...) for more details.
+
+    ## Warning: 176 parsing failures.
+    ## row col  expected    actual                                                                                                                   file
+    ##   1  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T44_q'
+    ##   2  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T44_q'
+    ##   3  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T44_q'
+    ##   4  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T44_q'
+    ##   5  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T44_q'
+    ## ... ... ......... ......... ......................................................................................................................
+    ## See problems(...) for more details.
+
+    ## Warning: 176 parsing failures.
+    ## row col  expected    actual                                                                                                                   file
+    ##   1  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T45_q'
+    ##   2  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T45_q'
+    ##   3  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T45_q'
+    ##   4  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T45_q'
+    ##   5  -- 6 columns 7 columns '/home/oangelin/GitHub/Tuber_bruising/genomics_population_structure/processed_data/structure_output/results_job_T45_q'
+    ## ... ... ......... ......... ......................................................................................................................
+    ## See problems(...) for more details.
+
+We can check that the samples posterior membership probability have a
+high correlation between the 5 STRUCTURE runs. This also allows me to
+match the different subpopulations between the runs (as one
+subpopulation might be labelled 1 in a run but 3 in another run):
+
+``` r
+cormat = cor(select(pop_structure_df, starts_with("K")))
+
+annots_df = data.frame(STRUCTURE_run = str_extract(rownames(cormat), "(?<=_)\\d$"),
+                       Subpopulation = str_extract(rownames(cormat), "(?<=K)\\d"))
+rownames(annots_df) = rownames(cormat)
+
+annots_colours = list("STRUCTURE_run" = brewer.pal(n_runs_per_k, "Set1"),
+                      "Subpopulation" = brewer.pal(K, "BrBG"))
+names(annots_colours$STRUCTURE_run) = paste0(1:n_runs_per_k)
+names(annots_colours$Subpopulation) = paste0(1:K)
+
+pheatmap(cormat,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         breaks = seq(-1, 1, length.out = 99),
+         color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100),
+         annotation_col = annots_df,
+         annotation_colors = annots_colours,
+         display_numbers = round(cormat, 2),
+         number_color = "black",
+         fontsize_number = 10,
+         legend = FALSE,
+         main = "Populations correlation")
+```
+
+<img src="3_population_structure_STRUCTURE_files/figure-gfm/unnamed-chunk-14-1.png" width="\linewidth" style="display: block; margin: auto;" />
+
+The function below re-labels the subpopulations detected in each
+STRUCTURE run so that they match. This is done based on the correlation
+between the posterior membership probabilities of the subpopulations
+across the runs:
+
+``` r
+## Group similar populations across different runs
+group_subpops = function(pop_structure_df, K, nruns){
+  
+  ## compute correlation matrix between the subpopulations in each replicate
+  cormat = cor(select(pop_structure_df, starts_with("K")))
+  
+  ## get the different correlation values in decreasing order (remove the first value, which is 1)
+  sorted_cors = unique(rev(sort(unlist(cormat))))[-1]
+  
+  ## the name of the subpopulations (i.e. KX_Y being the subpopulation X in replicate Y)
+  to_sort = rownames(cormat)
+  groups_list_final = c()
+  
+  ## when clustering subpopulations we don't want to cluster two subpopulations from a same run
+  to_exclude = lapply(to_sort, function(i){
+    cur_rep = str_extract(i, "_\\d$")
+    setdiff(to_sort[str_detect(to_sort, cur_rep)], i)
+  })
+  names(to_exclude) = to_sort
+  
+  while(TRUE){
+    
+    ## Get the highest correlation value
+    cor_thr = sorted_cors[1]
+    
+    ## group subpopulations that have a correlation higher than the threshold
+    groups_list = unique(lapply(to_sort, function(i){
+      res = colnames(cormat)[which(cormat[i,] > cor_thr)]
+      setdiff(intersect(res, to_sort), to_exclude[[i]])
+    }))
+    
+    if(any(sapply(groups_list, length) == nruns)){ ## if at least one complete cluster is formed (i.e. one grouping of nruns subpopulations)
+      ## get this complete cluster
+      temp = lapply(unique(groups_list), function(i){
+        if(length(i) == nruns){
+          as_tibble(matrix(i, nrow = 1), dimnames = list(c("1"), paste0("X", 1:length(i))))
+        }
+      }) %>%
+      reduce(bind_rows) %>%
+      distinct()
+      
+      ## save the complete cluster
+      groups_list_final = bind_rows(groups_list_final, temp)
+      
+      ## the subpopulations in this complete cluster are removed from the "to be sorted" list
+      to_sort = setdiff(to_sort, unlist(temp))
+    }
+    
+    if(length(sorted_cors) == 1) break
+    
+    ## remove the correlation value we just worked with
+    sorted_cors = sorted_cors[-1]
+  }
+  
+  if(any(dim(groups_list_final) != c(K, nruns))){
+    stop("Couldn't cluster the subpopulations. ")
+  }
+  
+  groups = sapply(rownames(cormat), function(i){which(groups_list_final == i, arr.ind = T)[1, "row"]})
+  names(groups) = rownames(cormat)
+  
+  return(groups)
+}
+```
+
+``` r
+subpop_labels = group_subpops(pop_structure_df, K, n_runs_per_k)
+```
+
+    ## Warning: The `x` argument of `as_tibble.matrix()` must have unique column names if `.name_repair` is omitted as of tibble 2.0.0.
+    ## Using compatibility `.name_repair`.
+    ## This warning is displayed once every 8 hours.
+    ## Call `lifecycle::last_lifecycle_warnings()` to see where this warning was generated.
+
+## Saving the results
+
+We will save the membership probabilities to use as covariates in the
+GWAS run.
+
+``` r
+towrite = pop_structure_df %>% 
+  select(-Family) %>% 
+  pivot_longer(cols = starts_with("K"),
+               names_to = "id",
+               values_to = "memb_proba") %>% 
+  mutate(STRUCTURE_run = str_extract(id, "(?<=_)\\d$"),
+         subpopulation = paste0("K", subpop_labels[id])) %>% 
+  group_by(Sample, subpopulation) %>% 
+  summarise(mean_memb_prob = mean(memb_proba), .groups = "drop") %>% 
+  pivot_wider(names_from = "subpopulation",
+             values_from = "mean_memb_prob")
+
+write_csv(towrite, paste0(working_folder, "processed_data/STRUCTURE_samples_coord.csv"))
+```
+
+[^1]: Evanno, G., Regnaut, S., & Goudet, J. (2005). Detecting the number
+    of clusters of individuals using the software STRUCTURE: a
+    simulation study. *Molecular ecology*, 14(8), 2611-2620.
