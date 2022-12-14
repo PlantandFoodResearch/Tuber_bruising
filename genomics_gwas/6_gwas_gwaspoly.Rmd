@@ -469,32 +469,32 @@ qq.plot(get(names(best_pop_setting)), trait = "bruising_score_mean") +
 For each GWAS run, a significance threshold will be computed to obtain the markers significantly associated with the phenotype. We'll use the `M.eff` method from the `set.threshold` function from `GWASpoly`. This performs a Bonferroni-type correction, except that instead of using the total number of markers, an effective number of markers is computed, to account for LD between markers.
 
 ```{r, eval = FALSE}
-data2_naive_threshold <- set.threshold(data2_naive, method = "M.eff", level = 0.05)
-save(data2_naive_threshold, file = here("genomics_gwas/processed_data/data2_naive_threshold.RData"))
+data2_naive_threshold <- set.threshold(data2_naive, method = "FDR", level = 0.05)
+save(data2_naive_threshold, file = here("genomics_gwas/processed_data/data2_naive_threshold_fdr.RData"))
 
-data2_K_threshold <- set.threshold(data2_K, method = "M.eff", level = 0.05)
-save(data2_K_threshold, file = here("genomics_gwas/processed_data/data2_K_threshold.RData"))
+data2_K_threshold <- set.threshold(data2_K, method = "FDR", level = 0.05)
+save(data2_K_threshold, file = here("genomics_gwas/processed_data/data2_K_threshold_fdr.RData"))
 
-data2_Qstructure_threshold <- set.threshold(data2_Qstructure, method = "M.eff", level = 0.05)
-save(data2_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_Qstructure_threshold.RData"))
+data2_Qstructure_threshold <- set.threshold(data2_Qstructure, method = "FDR", level = 0.05)
+save(data2_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_Qstructure_threshold_fdr.RData"))
 
-data2_Qdapc_threshold <- set.threshold(data2_Qdapc, method = "M.eff", level = 0.05)
-save(data2_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_Qdapc_threshold.RData"))
+data2_Qdapc_threshold <- set.threshold(data2_Qdapc, method = "FDR", level = 0.05)
+save(data2_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_Qdapc_threshold_fdr.RData"))
 
-data2_K_Qstructure_threshold <- set.threshold(data2_K_Qstructure, method = "M.eff", level = 0.05)
-save(data2_K_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_K_Qstructure_threshold.RData"))
+data2_K_Qstructure_threshold <- set.threshold(data2_K_Qstructure, method = "FDR", level = 0.05)
+save(data2_K_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_K_Qstructure_threshold_fdr.RData"))
 
-data2_K_Qdapc_threshold <- set.threshold(data2_K_Qdapc, method = "M.eff", level = 0.05)
-save(data2_K_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_K_Qdapc_threshold.RData"))
+data2_K_Qdapc_threshold <- set.threshold(data2_K_Qdapc, method = "FDR", level = 0.05)
+save(data2_K_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_K_Qdapc_threshold_fdr.RData"))
 ```
 
 ```{r, echo = FALSE}
-load(here("genomics_gwas/processed_data/data2_naive_threshold.RData"))
-load(here("genomics_gwas/processed_data/data2_K_threshold.RData"))
-load(here("genomics_gwas/processed_data/data2_Qstructure_threshold.RData"))
-load(here("genomics_gwas/processed_data/data2_Qdapc_threshold.RData"))
-load(here("genomics_gwas/processed_data/data2_K_Qstructure_threshold.RData"))
-load(here("genomics_gwas/processed_data/data2_K_Qdapc_threshold.RData"))
+load(here("genomics_gwas/processed_data/data2_naive_threshold_fdr.RData"))
+load(here("genomics_gwas/processed_data/data2_K_threshold_fdr.RData"))
+load(here("genomics_gwas/processed_data/data2_Qstructure_threshold_fdr.RData"))
+load(here("genomics_gwas/processed_data/data2_Qdapc_threshold_fdr.RData"))
+load(here("genomics_gwas/processed_data/data2_K_Qstructure_threshold_fdr.RData"))
+load(here("genomics_gwas/processed_data/data2_K_Qdapc_threshold_fdr.RData"))
 ```
 
 
@@ -519,24 +519,50 @@ write_csv(significant_qtls, here("genomics_gwas/processed_data/significant_qtls.
 Even if no markers were found significantly associated with a given phenotype, it is interesting to investigate the genomic regions in which markers have the highest association scores with the trait. In this section we are retrieving and saving the markers with a GWAS score above 4 (so unadjusted p-value < 0.0001) for each genetic model, to compare with findings from previous studies. If a marker is high-scoring for several genetic models, only the one yielding the highest score will be retained.
 
 ```{r}
-gwas_peaks_df <- full_join(
-  get(paste0(names(best_pop_setting), "_threshold"))@scores[["bruising_score_mean"]] %>% 
+which_data <- paste0(names(best_pop_setting), "_threshold")
+
+sign_qtls = get.QTL(get(which_data), traits = "bruising_score_mean")
+
+df <- full_join(
+  get(which_data)@scores[["bruising_score_mean"]] %>% 
     as_tibble(rownames = "marker") %>% 
     pivot_longer(cols = -marker,
                  names_to = "genetic_model",
                  values_to = "score"),
-  get(paste0(names(best_pop_setting), "_threshold"))@effects[["bruising_score_mean"]] %>% 
+  get(which_data)@effects[["bruising_score_mean"]] %>% 
     as_tibble(rownames = "marker") %>% 
     pivot_longer(cols = -marker,
                  names_to = "genetic_model",
                  values_to = "effect"),
-  by = c("marker", "genetic_model")) %>% 
-  filter(score > 4) %>% 
+  by = c("marker", "genetic_model"))
+
+## cheap trick to avoid error on column selection if there is no significant marker
+if(nrow(sign_qtls) > 0){
+  df_sign <- sign_qtls %>% 
+    as_tibble() %>%
+    select(marker = Marker,
+           genetic_model = Model) %>%
+    left_join(df, by = c("marker", "genetic_model"))
+} else {
+  df_sign <- df %>%
+    filter(marker == "something")
+}
+
+df_nonsign <- df %>% 
+  filter(!(marker %in% unique(sign_qtls$Marker)))
+
+gwas_peaks_df <- bind_rows(
+  df_sign,
+  df_nonsign
+) %>%
+  mutate(is_significant = marker %in% sign_qtls$Marker) %>% 
+  filter(score > 4 | is_significant) %>%  
   group_by(marker) %>% 
   slice_max(order_by = score, n = 1, with_ties = FALSE) %>% 
-  mutate(chrom = str_extract(marker, ".+(?=_)"),
+  mutate(phenotype = "bruising_score_mean",
+         chrom = str_extract(marker, ".+(?=_)"),
          pos = as.numeric(str_extract(marker, "(?<=_).+")),
-         is_significant = marker %in% significant_qtls$Marker) %>% 
+         is_significant = marker %in% sign_qtls$Marker) %>% 
   arrange(chrom, pos) %>% 
   select(marker, is_significant, score, genetic_model, everything())
 ```

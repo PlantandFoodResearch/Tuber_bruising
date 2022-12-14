@@ -16,6 +16,7 @@ here::i_am("genomics_gwas/5_gwas_phenotype_preprocessing.Rmd")
 
 if (!require("readxl")) install.packages("readxl"); library(readxl)
 if (!require("here")) install.packages("here"); library(here)
+if (!require("lme4")) install.packages("lme4"); library(lme4)
 if(!require("bestNormalize")) install.packages("bestNormalize"); library(bestNormalize)
 if (!require("tidyverse")) install.packages("tidyverse"); library(tidyverse)
 ```
@@ -44,36 +45,61 @@ We'll read the bruising score dataset and get an average bruising score for each
 
 ```{r}
 bruising_df = read_csv(bruising_file, show_col_types = FALSE) %>% 
-  select(Sample, Rep, starts_with("Bruise")) %>% 
+  select(Genotype = Sample, Rep, starts_with("Bruise")) %>% 
   pivot_longer(cols = starts_with("Bruise"),
                names_to = "Bruise",
                values_to = "bruising_score") %>% 
-  group_by(Sample) %>% 
-  summarise(bruising_score_mean = mean(bruising_score, na.rm = TRUE))
+  mutate(Rep = paste0("Rep", Rep),
+         Genotype = factor(Genotype),
+         Rep = factor(Rep))
 ```
 
 
-We can assess whether each phenotype is normally distributed using the Shapiro-Wilk test.
+## BLUE values
 
 ```{r}
-shapiro.test(bruising_df$bruising_score_mean)
+blue_model <- lmer(bruising_score ~ Genotype + (1|Genotype:Rep), 
+                   data = bruising_df)
+
+# summary(blue_model)
 ```
 
-The test shows evidence of non-normality.
+
+```{r}
+## extracting fixed effects coefficients
+blues <- fixef(blue_model)
+
+## Tidying up genotype labels
+names(blues) <- str_remove(names(blues), "Genotype")
+
+## Adding intercept coeff to all genotype levels except the baseline
+blues[setdiff(names(blues), "(Intercept)")] <- blues[setdiff(names(blues), "(Intercept)")] + blues["(Intercept)"]
+
+## Rename intercept coeff as baseline genotype
+names(blues)[names(blues) == "(Intercept)"] <- levels(bruising_df$Genotype)[1]
+```
+
 
 ## Normalisation of phenotypes using `bestNormalize`
 
+We can assess whether the BLUE values are normally distributed using the Shapiro-Wilk test.
+
+```{r}
+shapiro.test(blues)
+```
+
+The test shows evidence of non-normality.
 The package `bestNormalize` tests different normalisation methods on a given dataset and automatically selects the best performing one. It can be used as follows:
 
 ```{r}
 set.seed(1)
-norm_vals <- bestNormalize(bruising_df$bruising_score_mean)
+norm_vals <- bestNormalize(blues)
 norm_vals
 ```
 
 
 ```{r}
-tibble(Sample = bruising_df$Sample,
+tibble(Sample = names(norm_vals$x.t),
        bruising_score_mean = norm_vals$x.t) %>% 
   write_csv(here("genomics_gwas/processed_data/pheno_df_trans.csv"))
 ```

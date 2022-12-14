@@ -1,7 +1,7 @@
 Genome-Wide Association Analysis with GWASpoly
 ================
 Olivia Angelin-Bonnet
-June 29, 2022
+December 14, 2022
 
 ``` r
 theme_set(theme_bw())
@@ -126,65 +126,65 @@ individual relatedness in the model, so we will compare the following
 settings (referred to in this analysis as ‘population setting’),
 according to Sharma *et al.* (2018) [^1]:
 
--   The naive model: the analysis is performed with accounting for
-    individual relatedness (kinship matrix K set to a matrix of zeros
-    with diagonal elements set to 1) nor population structure (no
-    population structure membership used as covariates);
+- The naive model: the analysis is performed with accounting for
+  individual relatedness (kinship matrix K set to a matrix of zeros with
+  diagonal elements set to 1) nor population structure (no population
+  structure membership used as covariates);
 
--   The K only model: the analysis only accounts for individual
-    relatedness by computing the kinship matrix as the realised
-    relationship matrix *K=MM^T* [^2], where *M* is the genotype matrix
-    (with *n* rows and *m* columns if *n* is the number of samples and
-    *m* the number of markers);
+- The K only model: the analysis only accounts for individual
+  relatedness by computing the kinship matrix as the realised
+  relationship matrix *K=MM^T* [^2], where *M* is the genotype matrix
+  (with *n* rows and *m* columns if *n* is the number of samples and *m*
+  the number of markers);
 
--   The Q only model: the analysis only accounts for population
-    structure by integrating the subpopulation membership of each sample
-    as a covariate in the analysis. We computed the population structure
-    using two methods, namely STRUCTURE and DAPC, so we repeat this
-    model by using the population membership computed with each of these
-    methods. We thereafter distinguish between the two population
-    structure information by using the notation *Q_STRUCTURE* for the
-    analysis that uses the result of STRUCTURE, and *Q_DAPC* for the
-    analysis that uses the result of DAPC;
+- The Q only model: the analysis only accounts for population structure
+  by integrating the subpopulation membership of each sample as a
+  covariate in the analysis. We computed the population structure using
+  two methods, namely STRUCTURE and DAPC, so we repeat this model by
+  using the population membership computed with each of these methods.
+  We thereafter distinguish between the two population structure
+  information by using the notation *Q_STRUCTURE* for the analysis that
+  uses the result of STRUCTURE, and *Q_DAPC* for the analysis that uses
+  the result of DAPC;
 
--   The K+Q model: the analysis accounts for both individual relatedness
-    and population structure, by using the kinship matrix and
-    integrating the samples subpopulation membership as covariates.
-    Again, we run this analysis with the population structure inferred
-    with STRUCTURE (*K + Q_STRUCTURE* model) and with the population
-    structure inferred with DAPC (*K + Q_DAPC* model).
+- The K+Q model: the analysis accounts for both individual relatedness
+  and population structure, by using the kinship matrix and integrating
+  the samples subpopulation membership as covariates. Again, we run this
+  analysis with the population structure inferred with STRUCTURE (*K +
+  Q_STRUCTURE* model) and with the population structure inferred with
+  DAPC (*K + Q_DAPC* model).
 
 In addition to the population setting, the GWAS analysis can be
 performed using one of eight genetic models, that each uses a different
 model for the marker effect on the phenotype:
 
--   `General`: there are no constraints on the effects of the different
-    dosage levels of a marker on the phenotype;
+- `General`: there are no constraints on the effects of the different
+  dosage levels of a marker on the phenotype;
 
--   `additive`: the marker effect on the phenotype is proportional to
-    the dosage of the alternate allele;
+- `additive`: the marker effect on the phenotype is proportional to the
+  dosage of the alternate allele;
 
--   `1-dom-ref`: simple dominant, reference allele is dominant: a dosage
-    of 1 or more for the reference allele (i.e. dosage of 3 or less for
-    the alternate allele) yields the same effect on the phenotype;
+- `1-dom-ref`: simple dominant, reference allele is dominant: a dosage
+  of 1 or more for the reference allele (i.e. dosage of 3 or less for
+  the alternate allele) yields the same effect on the phenotype;
 
--   `1-dom-alt`: simple dominant, alternate allele is dominant: a dosage
-    of 1 or more for the alternate allele yields the same effect on the
-    phenotype;
+- `1-dom-alt`: simple dominant, alternate allele is dominant: a dosage
+  of 1 or more for the alternate allele yields the same effect on the
+  phenotype;
 
--   `2-dom-ref`: duplex dominant, reference allele is dominant: a dosage
-    of 2 or more for the reference allele yields (i.e. dosage of 2 or
-    less for the alternate allele) the same effect on the phenotype;
+- `2-dom-ref`: duplex dominant, reference allele is dominant: a dosage
+  of 2 or more for the reference allele yields (i.e. dosage of 2 or less
+  for the alternate allele) the same effect on the phenotype;
 
--   `2-dom-alt`: duplex dominant, alternate allele is dominant: a dosage
-    of 2 or more for the alternate allele yields the same effect on the
-    phenotype;
+- `2-dom-alt`: duplex dominant, alternate allele is dominant: a dosage
+  of 2 or more for the alternate allele yields the same effect on the
+  phenotype;
 
--   `diplo-general`: all heterozygotes have the same effect (no
-    constraint on this effect);
+- `diplo-general`: all heterozygotes have the same effect (no constraint
+  on this effect);
 
--   `diplo-additive`: all heterozygotes have the same effect, and this
-    effect is halfway between the effects of the homozygotes.
+- `diplo-additive`: all heterozygotes have the same effect, and this
+  effect is halfway between the effects of the homozygotes.
 
 We will run the GWAS analysis of each phenotype for each combination of
 population setting times genetic model.
@@ -438,14 +438,14 @@ infl_fact_df %>%
 
 The best population setting will be selected as follow:
 
--   compute the average inflation factors across the genetic models, for
-    each population setting;
--   Amongst the population settings yielding an average inflation factor
-    above 1, select the population setting with the average inflation
-    factor closest to 1;
--   If all population settings produce an average inflation factor below
-    1, select the population setting with the average inflation factor
-    closest to 1.
+- compute the average inflation factors across the genetic models, for
+  each population setting;
+- Amongst the population settings yielding an average inflation factor
+  above 1, select the population setting with the average inflation
+  factor closest to 1;
+- If all population settings produce an average inflation factor below
+  1, select the population setting with the average inflation factor
+  closest to 1.
 
 ``` r
 best_pop_setting = infl_fact_df %>% 
@@ -493,23 +493,23 @@ total number of markers, an effective number of markers is computed, to
 account for LD between markers.
 
 ``` r
-data2_naive_threshold <- set.threshold(data2_naive, method = "M.eff", level = 0.05)
-save(data2_naive_threshold, file = here("genomics_gwas/processed_data/data2_naive_threshold.RData"))
+data2_naive_threshold <- set.threshold(data2_naive, method = "FDR", level = 0.05)
+save(data2_naive_threshold, file = here("genomics_gwas/processed_data/data2_naive_threshold_fdr.RData"))
 
-data2_K_threshold <- set.threshold(data2_K, method = "M.eff", level = 0.05)
-save(data2_K_threshold, file = here("genomics_gwas/processed_data/data2_K_threshold.RData"))
+data2_K_threshold <- set.threshold(data2_K, method = "FDR", level = 0.05)
+save(data2_K_threshold, file = here("genomics_gwas/processed_data/data2_K_threshold_fdr.RData"))
 
-data2_Qstructure_threshold <- set.threshold(data2_Qstructure, method = "M.eff", level = 0.05)
-save(data2_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_Qstructure_threshold.RData"))
+data2_Qstructure_threshold <- set.threshold(data2_Qstructure, method = "FDR", level = 0.05)
+save(data2_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_Qstructure_threshold_fdr.RData"))
 
-data2_Qdapc_threshold <- set.threshold(data2_Qdapc, method = "M.eff", level = 0.05)
-save(data2_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_Qdapc_threshold.RData"))
+data2_Qdapc_threshold <- set.threshold(data2_Qdapc, method = "FDR", level = 0.05)
+save(data2_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_Qdapc_threshold_fdr.RData"))
 
-data2_K_Qstructure_threshold <- set.threshold(data2_K_Qstructure, method = "M.eff", level = 0.05)
-save(data2_K_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_K_Qstructure_threshold.RData"))
+data2_K_Qstructure_threshold <- set.threshold(data2_K_Qstructure, method = "FDR", level = 0.05)
+save(data2_K_Qstructure_threshold, file = here("genomics_gwas/processed_data/data2_K_Qstructure_threshold_fdr.RData"))
 
-data2_K_Qdapc_threshold <- set.threshold(data2_K_Qdapc, method = "M.eff", level = 0.05)
-save(data2_K_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_K_Qdapc_threshold.RData"))
+data2_K_Qdapc_threshold <- set.threshold(data2_K_Qdapc, method = "FDR", level = 0.05)
+save(data2_K_Qdapc_threshold, file = here("genomics_gwas/processed_data/data2_K_Qdapc_threshold_fdr.RData"))
 ```
 
 ## Retrieving the significant markers
@@ -540,24 +540,50 @@ several genetic models, only the one yielding the highest score will be
 retained.
 
 ``` r
-gwas_peaks_df <- full_join(
-  get(paste0(names(best_pop_setting), "_threshold"))@scores[["bruising_score_mean"]] %>% 
+which_data <- paste0(names(best_pop_setting), "_threshold")
+
+sign_qtls = get.QTL(get(which_data), traits = "bruising_score_mean")
+
+df <- full_join(
+  get(which_data)@scores[["bruising_score_mean"]] %>% 
     as_tibble(rownames = "marker") %>% 
     pivot_longer(cols = -marker,
                  names_to = "genetic_model",
                  values_to = "score"),
-  get(paste0(names(best_pop_setting), "_threshold"))@effects[["bruising_score_mean"]] %>% 
+  get(which_data)@effects[["bruising_score_mean"]] %>% 
     as_tibble(rownames = "marker") %>% 
     pivot_longer(cols = -marker,
                  names_to = "genetic_model",
                  values_to = "effect"),
-  by = c("marker", "genetic_model")) %>% 
-  filter(score > 4) %>% 
+  by = c("marker", "genetic_model"))
+
+## cheap trick to avoid error on column selection if there is no significant marker
+if(nrow(sign_qtls) > 0){
+  df_sign <- sign_qtls %>% 
+    as_tibble() %>%
+    select(marker = Marker,
+           genetic_model = Model) %>%
+    left_join(df, by = c("marker", "genetic_model"))
+} else {
+  df_sign <- df %>%
+    filter(marker == "something")
+}
+
+df_nonsign <- df %>% 
+  filter(!(marker %in% unique(sign_qtls$Marker)))
+
+gwas_peaks_df <- bind_rows(
+  df_sign,
+  df_nonsign
+) %>%
+  mutate(is_significant = marker %in% sign_qtls$Marker) %>% 
+  filter(score > 4 | is_significant) %>%  
   group_by(marker) %>% 
   slice_max(order_by = score, n = 1, with_ties = FALSE) %>% 
-  mutate(chrom = str_extract(marker, ".+(?=_)"),
+  mutate(phenotype = "bruising_score_mean",
+         chrom = str_extract(marker, ".+(?=_)"),
          pos = as.numeric(str_extract(marker, "(?<=_).+")),
-         is_significant = marker %in% significant_qtls$Marker) %>% 
+         is_significant = marker %in% sign_qtls$Marker) %>% 
   arrange(chrom, pos) %>% 
   select(marker, is_significant, score, genetic_model, everything())
 ```
